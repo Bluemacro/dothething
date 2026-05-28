@@ -803,6 +803,10 @@ class Browser:
         "security check", "are you a robot", "ray id", "attention required",
         "enable javascript and cookies", "recaptcha", "hcaptcha", "turnstile",
     ]
+    LOADING_INDICATORS = [
+        "loading", "please wait", "one moment", "working on it",
+        "initializing", "spinner", "skeleton",
+    ]
 
     def __init__(self, headless=True):
         self._session = None
@@ -827,10 +831,138 @@ class Browser:
 
     @staticmethod
     def _looks_like_captcha(text):
-        if not text or len(text) > 5000:
+        if not text:
+            return False
+        lower = text[:10000].lower()
+        return any(ind in lower for ind in Browser.CAPTCHA_INDICATORS)
+
+    @staticmethod
+    def _looks_like_loading(text):
+        if not text or len(text) > 500:
             return False
         lower = text.lower()
-        return any(ind in lower for ind in Browser.CAPTCHA_INDICATORS)
+        return any(ind in lower for ind in Browser.LOADING_INDICATORS)
+
+    async def _page_state(self, page):
+        try:
+            state = await page.evaluate("""() => {
+                const text = [
+                    document.title || "",
+                    location.href || "",
+                    document.body?.innerText || "",
+                    document.documentElement?.textContent || "",
+                ].join("\\n").slice(0, 6000);
+                const challengeSelectors = [
+                    '#challenge-form',
+                    '#challenge-running',
+                    '.ray_id',
+                    '.cf-turnstile',
+                    '[class*="turnstile"]',
+                    '[id*="turnstile"]',
+                    'iframe[src*="challenges.cloudflare.com"]',
+                    'iframe[src*="captcha"]',
+                    'iframe[src*="hcaptcha"]',
+                    'iframe[src*="recaptcha"]',
+                    '[data-sitekey]',
+                ];
+                const loadingSelectors = [
+                    '[class*="spinner"]',
+                    '[class*="skeleton"]',
+                    '[class*="loading"]',
+                    '[aria-busy="true"]',
+                ];
+                return {
+                    title: document.title || "",
+                    url: location.href || "",
+                    text,
+                    textLength: text.length,
+                    hasChallengeSelector: challengeSelectors.some((s) => document.querySelector(s)),
+                    hasLoadingSelector: loadingSelectors.some((s) => document.querySelector(s)),
+                };
+            }""")
+        except Exception:
+            state = {}
+        text = str(state.get("text") or "")
+        state["challenge"] = bool(state.get("hasChallengeSelector")) or self._looks_like_captcha(text)
+        state["loading"] = bool(state.get("hasLoadingSelector")) or self._looks_like_loading(text)
+        return state
+
+    async def _settle_page(self, session, page, timeout_ms, wait_for=None):
+        started = time.monotonic()
+        timeout_ms = max(5000, min(int(timeout_ms or 45000), 90000))
+
+        for load_state in ("domcontentloaded", "networkidle"):
+            try:
+                await page.wait_for_load_state(load_state, timeout=min(timeout_ms, 10000))
+            except Exception:
+                pass
+
+        if wait_for:
+            try:
+                await page.wait_for_selector(wait_for, timeout=min(timeout_ms, 30000))
+            except Exception:
+                pass
+
+        try:
+            await page.evaluate("""() => {
+                const sels = [
+                    '[class*="cookie"] button[class*="accept"]',
+                    '[id*="cookie"] button[class*="accept"]',
+                    '.cc-btn.cc-dismiss',
+                    'button[aria-label*="accept"]',
+                ];
+                for (const s of sels) {
+                    const btn = document.querySelector(s);
+                    if (btn) { btn.click(); break; }
+                }
+            }""")
+            await page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        challenge_seen = False
+        solve_attempted = False
+        solve_error = None
+        deadline = started + (timeout_ms / 1000)
+        loading_deadline = min(deadline, started + 10)
+
+        while time.monotonic() < deadline:
+            state = await self._page_state(page)
+            if state.get("challenge"):
+                challenge_seen = True
+                if os.environ.get("TWOCAPTCHA_API_KEY") and not solve_attempted:
+                    solve_attempted = True
+                    try:
+                        await session.aexecute(type="captcha_solve", raise_on_failure=False)
+                    except Exception as e:
+                        solve_error = str(e)[:300]
+                await page.wait_for_timeout(3000)
+                continue
+
+            if state.get("loading") and time.monotonic() < loading_deadline:
+                await page.wait_for_timeout(1000)
+                continue
+
+            waited_ms = int((time.monotonic() - started) * 1000)
+            return {
+                "challenge_seen": challenge_seen,
+                "challenge": False,
+                "challenge_resolved": challenge_seen,
+                "solve_attempted": solve_attempted,
+                "solve_error": solve_error,
+                "waited_ms": waited_ms,
+            }
+
+        state = await self._page_state(page)
+        waited_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "challenge_seen": challenge_seen or bool(state.get("challenge")),
+            "challenge": bool(state.get("challenge")),
+            "challenge_resolved": False,
+            "solve_attempted": solve_attempted,
+            "solve_error": solve_error,
+            "waited_ms": waited_ms,
+        }
 
     async def fetch(self, url, mode="markdown", screenshot_region="above",
                     timeout_ms=45000, extract_selector=None, wait_for=None):
@@ -848,28 +980,17 @@ class Browser:
 
             page = session.window.page
 
-            if wait_for:
-                try:
-                    await page.wait_for_selector(wait_for, timeout=min(timeout_ms, 30000))
-                except Exception:
-                    pass
-
-            try:
-                await page.evaluate("""() => {
-                    const sels = [
-                        '[class*="cookie"] button[class*="accept"]',
-                        '[id*="cookie"] button[class*="accept"]',
-                        '.cc-btn.cc-dismiss',
-                        'button[aria-label*="accept"]',
-                    ];
-                    for (const s of sels) {
-                        const btn = document.querySelector(s);
-                        if (btn) { btn.click(); break; }
-                    }
-                }""")
-                await page.wait_for_timeout(500)
-            except Exception:
-                pass
+            settle = await self._settle_page(session, page, timeout_ms, wait_for=wait_for)
+            if settle.get("challenge") and mode != "screenshot":
+                solve_note = (
+                    " Captcha solving was attempted but did not clear the challenge."
+                    if settle.get("solve_attempted")
+                    else " Set TWOCAPTCHA_API_KEY to enable automated solving when supported."
+                )
+                return (
+                    f"Error blocked by security verification at {page.url} "
+                    f"after {settle.get('waited_ms', 0)}ms.{solve_note}"
+                )
 
             if mode == "screenshot":
                 if screenshot_region == "full":
@@ -890,6 +1011,10 @@ class Browser:
                     "type": "screenshot", "url": str(page.url),
                     "path": str(path), "region": screenshot_region,
                     "size_bytes": len(data),
+                    "challenge_detected": bool(settle.get("challenge_seen")),
+                    "challenge_unresolved": bool(settle.get("challenge")),
+                    "captcha_solve_attempted": bool(settle.get("solve_attempted")),
+                    "settle_ms": settle.get("waited_ms", 0),
                 }, ensure_ascii=False, indent=2)
 
             elif mode == "html":
@@ -917,6 +1042,11 @@ class Browser:
                             markdown = await session.ascrape(only_main_content=True)
                         except Exception:
                             pass
+                    if self._looks_like_captcha(markdown):
+                        return (
+                            f"Error blocked by security verification at {page.url}. "
+                            "Set TWOCAPTCHA_API_KEY to enable automated solving when supported."
+                        )
 
                 title = await page.title()
                 current_url = page.url
@@ -2234,7 +2364,8 @@ TOOLS = [
                 "mode='markdown' extracts clean article content using Notte's built-in scraper — best for "
                 "articles and docs. Includes automatic captcha detection and solving when TWOCAPTCHA_API_KEY "
                 "is set. mode='text' is a fast lightweight fetch without browser rendering. "
-                "mode='screenshot' saves a PNG — use analyze_image to interpret it. "
+                "mode='screenshot' waits for page/challenge settling, saves a PNG, and returns "
+                "challenge metadata — use analyze_image to interpret it. "
                 "mode='html' returns full rendered DOM. For complex multi-step interactions, use browser_agent instead."
             ),
             "parameters": {
@@ -3366,9 +3497,10 @@ recency. Use categories='images' for image search, categories='news' for news. \
 Use engines='google,bing' to target specific providers, engines='google scholar' \
 for academic search. Use time_range for freshness.
 - fetch_page: markdown mode uses Notte's built-in content extractor for clean \
-article extraction. Includes automatic captcha detection and solving. Use \
-mode="text" for fast lightweight fetches without browser rendering. Use \
-mode="screenshot" + analyze_image for visual content. DO NOT use for interactive \
+article extraction. Includes page settling, security-challenge detection, and \
+captcha solving when configured. Use mode="text" for fast lightweight fetches \
+without browser rendering. Use mode="screenshot" + analyze_image for visual content, \
+and inspect challenge_detected/challenge_unresolved in screenshot results. DO NOT use for interactive \
 tasks — use browser_agent for those.
 - browser_agent: Hands a goal to an autonomous browser agent (Notte + Camoufox \
 + Sonnet 4.6). Use for multi-step web interactions: filling forms, login flows, \
