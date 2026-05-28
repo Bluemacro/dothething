@@ -294,6 +294,28 @@ if [ ! -f "$BASE/.notte_v2" ]; then
     touch "$BASE/.notte_v2"
 fi
 
+# Playwright 1.60's Firefox driver can crash when Firefox reports a page error
+# without a source location. Camoufox uses that Firefox path, so patch the
+# bundled JS driver defensively until this is fixed upstream.
+python - <<'PY'
+from pathlib import Path
+
+try:
+    import playwright
+
+    path = Path(playwright.__file__).parent / "driver/package/lib/coreBundle.js"
+    text = path.read_text(encoding="utf-8")
+    old = "const pageError = { error, location: location2 };"
+    new = (
+        "const pageError = { error, location: location2 || "
+        '{ url: "", lineNumber: 0, columnNumber: 0 } };'
+    )
+    if old in text:
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+except Exception:
+    pass
+PY
+
 # ── Write and exec agent ────────────────────────────────────────
 cat > "$BASE/agent.py" << 'PYTHON_AGENT'
 #!/usr/bin/env python3
@@ -812,13 +834,13 @@ class Browser:
 
     async def fetch(self, url, mode="markdown", screenshot_region="above",
                     timeout_ms=45000, extract_selector=None, wait_for=None):
-        try:
+        async with self._fetch_lock:
+          try:
             session = await self._ensure()
-        except Exception as e:
+          except Exception as e:
             async with self._lock:
                 self._session = None
             return f"Error launching browser: {e}"
-        async with self._fetch_lock:
           try:
             result = await session.aexecute(type="goto", url=url)
             if not result.success:
