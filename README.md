@@ -58,7 +58,7 @@ Everything else is installed automatically into `/tmp/dothething` on first run.
 | Flag | What it does |
 |---|---|
 | `--prompt "..."` | Provide the task inline instead of opening the editor |
-| `--fast` | Use claude-opus-4.6-fast (cheaper, slightly less capable) |
+| `--fast` | Use claude-opus-4.8-fast:online (cheaper, slightly less capable) |
 | `--cwd DIR` | Set the working directory for file operations (default: `.`) |
 | `--max-loops N` | Cap the number of agent turns (default: 200) |
 | `--oraclepro` | Use GPT-5.4-pro instead of GPT-5.4 for oracle calls |
@@ -119,7 +119,7 @@ All calls route through OpenRouter. You only need one API key.
 
 | Role | Default model | Flag to change |
 |---|---|---|
-| Main agent | Claude Opus 4.6 | `--fast` for Opus 4.6-fast |
+| Main agent | Claude Opus 4.8 | `--fast` for Opus 4.8-fast |
 | Summarizer, Notte agent, delegate | Claude Sonnet 4.6 | -- |
 | Oracle | GPT-5.4 | `--oraclepro` for GPT-5.4-pro |
 

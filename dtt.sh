@@ -102,7 +102,7 @@ Usage:
            [--notify-email EMAIL] [--max-cost USD]
 
 Flags:
-  --fast          Use anthropic/claude-opus-4.6-fast instead of opus 4.7
+  --fast          Use anthropic/claude-opus-4.8-fast:online instead of opus 4.8
   --prompt "..."  Provide task inline (otherwise opens multiline editor)
   --cwd DIR       Working directory for relative paths (default: .)
   --max-loops N   Maximum agent loop iterations (default: 200)
@@ -367,8 +367,8 @@ if "NOTTE_CONFIG_PATH" not in os.environ:
 
 OPENROUTER_URL  = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_STATS= "https://openrouter.ai/api/v1/generation"
-OPUS            = "anthropic/claude-opus-4.7:online"
-OPUS_FAST       = "anthropic/claude-opus-4.6-fast"
+OPUS            = "anthropic/claude-opus-4.8:online"
+OPUS_FAST       = "anthropic/claude-opus-4.8-fast:online"
 SONNET          = "anthropic/claude-sonnet-4.6"
 ORACLE_DEFAULT  = "openai/gpt-5.5:online"
 ORACLE_PRO      = "openai/gpt-5.5-pro:online"
@@ -8435,7 +8435,7 @@ def main():
         description="Autonomous AI agent — https://dotheth.ing",
         usage="dothething [--fast] [--oraclepro] [--resume ID] [prompt ...]",
     )
-    parser.add_argument("--fast", action="store_true", help="Use claude-opus-4.6-fast")
+    parser.add_argument("--fast", action="store_true", help="Use claude-opus-4.8-fast:online")
     parser.add_argument("--oraclepro", action="store_true", help="Use gpt-5.5-pro for oracle (default: gpt-5.5)")
     parser.add_argument("--prompt", type=str, default=None, help="Inline prompt text")
     parser.add_argument("--cwd", type=str, default=".", help="Working directory for relative paths")
