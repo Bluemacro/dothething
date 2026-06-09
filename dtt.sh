@@ -1094,7 +1094,7 @@ class CostTracker:
         self._http = http_client
         self._task = asyncio.create_task(self._worker())
 
-    async def track(self, response_id, label="opus"):
+    async def track(self, response_id, label="fable"):
         if response_id and response_id not in self._accounted:
             await self._queue.put((response_id, label, time.time(), 0))
 
@@ -7027,11 +7027,11 @@ class Agent:
                     else:
                         rid = result.get("id")
                         if rid:
-                            await self.cost_tracker.track(rid, "opus")
+                            await self.cost_tracker.track(rid, "fable")
                 else:
                     rid = result.get("id")
                     if rid:
-                        await self.cost_tracker.track(rid, "opus")
+                        await self.cost_tracker.track(rid, "fable")
 
                 if "error" in result:
                     err = result["error"]
@@ -7048,7 +7048,7 @@ class Agent:
                         result = resp2.json()
                         rid2 = result.get("id")
                         if rid2:
-                            await self.cost_tracker.track(rid2, "opus")
+                            await self.cost_tracker.track(rid2, "fable")
                         if "error" not in result:
                             return result
                     self.events.emit("error", message=f"API error: {msg}")
