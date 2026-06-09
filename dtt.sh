@@ -107,7 +107,7 @@ Usage:
            [--notify-email EMAIL] [--max-cost USD]
 
 Flags:
-  --fast          Use anthropic/claude-opus-4.8-fast:online instead of opus 4.8
+  --fast          Use anthropic/claude-opus-4.8-fast:online instead of fable 5
   --prompt "..."  Provide task inline (otherwise opens multiline editor)
   --cwd DIR       Working directory for relative paths (default: .)
   --max-loops N   Maximum agent loop iterations (default: 200)
@@ -373,7 +373,7 @@ if "NOTTE_CONFIG_PATH" not in os.environ:
 
 OPENROUTER_URL  = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_STATS= "https://openrouter.ai/api/v1/generation"
-OPUS            = "anthropic/claude-opus-4.8:online"
+FABLE           = "anthropic/claude-fable-5:online"
 OPUS_FAST       = "anthropic/claude-opus-4.8-fast:online"
 SONNET          = "anthropic/claude-sonnet-4.6"
 ORACLE_DEFAULT  = "openai/gpt-5.5:online"
@@ -8321,7 +8321,7 @@ class OrchestratorApp:
                                 OPENROUTER_URL,
                                 headers=_make_headers(orchestrator.api_key),
                                 json={
-                                    "model": OPUS,
+                                    "model": FABLE,
                                     "messages": messages,
                                     "tools": ORCHESTRATOR_TOOLS,
                                     "tool_choice": "auto",
@@ -8470,7 +8470,7 @@ def main():
         print("Error: OPENROUTER_API_KEY environment variable not set.", file=sys.stderr)
         sys.exit(1)
 
-    model = OPUS_FAST if args.fast else OPUS
+    model = OPUS_FAST if args.fast else FABLE
     oracle_model = ORACLE_PRO if args.oraclepro else ORACLE_DEFAULT
     cwd = str(Path(args.cwd).expanduser().resolve())
 
