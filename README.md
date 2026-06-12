@@ -78,7 +78,7 @@ Everything else is installed automatically into `/tmp/dothething` on first run.
 
 The agent routes Claude Fable through OpenRouter. Every turn, the model decides which tools to call, processes the results, and decides what to do next.
 
-**result_mode.** Every tool call has a `result_mode`. If you need exact output, use `"raw"`. If you tell it to "extract all function signatures", it pipes the output through Sonnet for a tight summary before the main agent sees it. This keeps the context window manageable on long tasks.
+**result_mode.** Every tool call has a `result_mode`. If you need exact output, use `"raw"`. If you tell it to "extract all function signatures", it pipes the output through Gemini 3.5 Flash for a tight summary before the main agent sees it. This keeps the context window manageable on long tasks.
 
 **Browser automation.** We use Notte with Camoufox under the hood. For simple scraping, `fetch_page` grabs clean markdown with no LLM cost. If a captcha shows up, it gets solved automatically. For complex multi-step interactions (login flows, forms, SPAs), the agent can hand off the session to a dedicated Notte browser agent via `browser_agent`.
 
@@ -86,7 +86,7 @@ The agent routes Claude Fable through OpenRouter. Every turn, the model decides 
 
 **Thread persistence.** Every session saves to `~/.dtt/threads/` with a timestamped ID. If you interrupt a run or hit the loop limit, resume with `--resume <thread-id>`.
 
-**Skills.** Drop skill directories into `~/.dtt/skills/` to teach the agent new procedures. Each skill is a directory containing a `SKILL.md` file (Claude Code convention). Skills with `allowed-tools` in their frontmatter inject directly into the agent's context, so it follows those instructions while using its own tools. Text-processing skills run via Sonnet as isolated sub-tasks. Skills can also be installed mid-session via the `manage_skill` tool.
+**Skills.** Drop skill directories into `~/.dtt/skills/` to teach the agent new procedures. Each skill is a directory containing a `SKILL.md` file (Claude Code convention). Skills with `allowed-tools` in their frontmatter inject directly into the agent's context, so it follows those instructions while using its own tools. Text-processing skills run via Gemini 3.5 Flash as isolated sub-tasks. Skills can also be installed mid-session via the `manage_skill` tool.
 
 **MCP servers.** Configure MCP servers in `~/.dtt/mcp.json` (same format as Claude Code). The agent picks up all connected MCP tools at startup. Servers can also be added mid-session via the `manage_mcp` tool.
 
@@ -121,7 +121,8 @@ All calls route through OpenRouter. You only need one API key.
 | Role | Default model | Flag to change |
 |---|---|---|
 | Main agent | Claude Fable 5 | `--fast` for Opus 4.8-fast |
-| Summarizer, Notte agent, delegate | Claude Sonnet 4.6 | -- |
+| Summarizer, analysis, delegate | Google Gemini 3.5 Flash | -- |
+| Browser agent (Notte) | Claude Sonnet 4.6 | -- |
 | Oracle | GPT-5.5 | `--oraclepro` for GPT-5.5-pro |
 
 ## Tools
@@ -150,7 +151,7 @@ Each skill lives in its own directory under `~/.dtt/skills/` as a `SKILL.md` fil
 ---
 name: my-skill
 description: What this skill does
-inline: true          # inject into agent context (vs. delegate to Sonnet)
+inline: true          # inject into agent context (vs. delegate to Gemini 3.5 Flash)
 allowed-tools: [Read, Write, Edit]  # implies inline
 disable-model-invocation: true  # hide from agent's skill list
 ---

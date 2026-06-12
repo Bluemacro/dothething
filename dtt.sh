@@ -380,7 +380,10 @@ OPENROUTER_STATS= "https://openrouter.ai/api/v1/generation"
 # tools." The agent has native search_web/fetch_page tools, so it's redundant here.
 FABLE           = "anthropic/claude-fable-5"
 OPUS_FAST       = "anthropic/claude-opus-4.8-fast"
-SONNET          = "anthropic/claude-sonnet-4.6"
+# Secondary "worker" model: result-mode summarization, delegation, image/data
+# analysis, batch processing, and context compaction. The browser agent uses its
+# own model (see browser_agent) — this constant does not drive it.
+WORKER          = "google/gemini-3.5-flash"
 ORACLE_DEFAULT  = "openai/gpt-5.5:online"
 ORACLE_PRO      = "openai/gpt-5.5-pro:online"
 MAX_LOOPS       = 200
@@ -1870,7 +1873,7 @@ def parse_fallback_tool_calls(text):
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-# Smart Summarizer — pipes big outputs through Sonnet
+# Smart Summarizer — pipes big outputs through Gemini 3.5 Flash
 # ═══════════════════════════════════════════════════════════════════
 async def smart_summarize(raw, goal, headers, cost_tracker, http, tool_name="unknown"):
     if not raw or not raw.strip():
@@ -1883,7 +1886,7 @@ async def smart_summarize(raw, goal, headers, cost_tracker, http, tool_name="unk
                 OPENROUTER_URL,
                 headers=headers,
                 json={
-                    "model": SONNET,
+                    "model": WORKER,
                     "messages": [
                         {
                             "role": "system",
@@ -1915,7 +1918,7 @@ async def smart_summarize(raw, goal, headers, cost_tracker, http, tool_name="unk
             result = resp.json()
             rid = result.get("id")
             if rid:
-                await cost_tracker.track(rid, "sonnet")
+                await cost_tracker.track(rid, "worker")
             if "error" in result:
                 raise RuntimeError(result["error"])
             content = result["choices"][0]["message"]["content"]
@@ -2176,7 +2179,7 @@ class InputHandler:
 # ═══════════════════════════════════════════════════════════════════
 RESULT_MODE_PROP = {
     "type": "string",
-    "description": "Mandatory. 'raw' for exact unprocessed output, or a goal string for Sonnet-summarized output.",
+    "description": "Mandatory. 'raw' for exact unprocessed output, or a goal string for Gemini 3.5 Flash-summarized output.",
 }
 
 TOOLS = [
@@ -2576,7 +2579,7 @@ TOOLS = [
         "function": {
             "name": "delegate",
             "description": (
-                "Delegate a focused sub-task to a fast, cheap model (Sonnet 4.6). Use for: "
+                "Delegate a focused sub-task to a fast, cheap model (Gemini 3.5 Flash). Use for: "
                 "summarizing, extracting structured data, reformatting, translating, classifying, "
                 "deduplicating search results, extracting the most relevant items from a large "
                 "dataset. Use input_file to pass file contents as context. The delegate has NO "
@@ -2810,7 +2813,7 @@ TOOLS = [
         "function": {
             "name": "analyze_data",
             "description": (
-                "Send a file's contents to Sonnet 4.6 for structured processing. Use for "
+                "Send a file's contents to Gemini 3.5 Flash for structured processing. Use for "
                 "deduplication, extraction, filtering, classification, scoring, ranking, "
                 "reformatting, or any analytical task over a data file (JSON, CSV, text). "
                 "For files over 200K characters, content is chunked and processed in parts. "
@@ -2848,7 +2851,7 @@ TOOLS = [
             "name": "use_skill",
             "description": (
                 "Invoke a loaded skill by name. Skills are user-defined procedures loaded "
-                "from ~/.dtt/skills/. mode='delegate' runs the skill as an isolated Sonnet "
+                "from ~/.dtt/skills/. mode='delegate' runs the skill as an isolated Gemini 3.5 Flash "
                 "sub-task. mode='read' returns the full skill instructions into your context "
                 "so you can execute them yourself with your tools. Skills marked as inline "
                 "in the system prompt are already active — follow their instructions directly."
@@ -2868,7 +2871,7 @@ TOOLS = [
                         "type": "string",
                         "enum": ["delegate", "read"],
                         "description": (
-                            "'delegate' runs the skill as an isolated sub-task via Sonnet. "
+                            "'delegate' runs the skill as an isolated sub-task via Gemini 3.5 Flash. "
                             "'read' returns the full skill instructions into your context so "
                             "you can execute them yourself with your full tool access."
                         ),
@@ -2884,7 +2887,7 @@ TOOLS = [
         "function": {
             "name": "batch_process",
             "description": (
-                "Process a list of items in parallel using Sonnet 4.6. Each item is "
+                "Process a list of items in parallel using Gemini 3.5 Flash. Each item is "
                 "processed independently with the same instruction template. Use for: bulk "
                 "research, classification, extraction, enrichment. Results are collected "
                 "into a JSON array and written to output_file.\n\n"
@@ -2892,7 +2895,7 @@ TOOLS = [
                 "SERPER_API_KEY is set, otherwise via SearXNG (using search_query_template "
                 "for targeted queries like '2026 current CEO {item}'). The top 20 results "
                 "then have their page content fetched via httpx + BeautifulSoup and truncated "
-                "to ~5000 tokens each, giving Sonnet rich source material to work with.\n\n"
+                "to ~5000 tokens each, giving Gemini 3.5 Flash rich source material to work with.\n\n"
                 "For large datasets (500+ items), split into chunks and call batch_process "
                 "repeatedly (e.g. 30 calls of 50 items each). Repeated batch_process calls "
                 "in sequence is the correct and expected pattern.\n\n"
@@ -2908,7 +2911,7 @@ TOOLS = [
                     "instruction_template": {
                         "type": "string",
                         "description": (
-                            "Instruction sent to Sonnet for each item. Use {item} as "
+                            "Instruction sent to Gemini 3.5 Flash for each item. Use {item} as "
                             "placeholder. Use {search_results} if enrich_with_search is true. "
                             "When enriched, search_results includes fetched page content from "
                             "up to 20 URLs (~5000 tokens each), not just snippets."
@@ -3317,7 +3320,7 @@ presented as research is a CATASTROPHIC failure
 
 ALWAYS:
 - Use run_code to write batch-processing scripts for parallel execution
-- Use batch_process to fan out work to Sonnet in parallel
+- Use batch_process to fan out work to Gemini 3.5 Flash in parallel
 - Use analyze_data to process/filter/deduplicate large result files
 - Track completion counts explicitly: "Processed 347/500"
 - Write intermediate results to files after every batch — never hold \
@@ -3530,7 +3533,7 @@ requests — NOT for human-readable web pages (use fetch_page for those).
 Interprets charts, diagrams, screenshots, scanned documents.
 - notes_add/notes_read: accumulate key findings across a long task so you \
 don't lose them to context pressure. Use notes_add early and often.
-- delegate: cheap, fast sub-task execution via Sonnet. Use for mechanical \
+- delegate: cheap, fast sub-task execution via Gemini 3.5 Flash. Use for mechanical \
 work: summarizing documents, extracting structured data, reformatting content, \
 classification. The delegate has NO tools — it only processes text you provide.
 - think: FREE. Use liberally before complex edits, after confusing results, \
@@ -3547,7 +3550,7 @@ handles that. Wastes tokens if misused. Use increasing intervals when polling.
 is automatically injected for direct SearXNG API access. Use asyncio + httpx for \
 parallel operations (e.g. 500 concurrent searches). Write results to files rather \
 than printing massive stdout. This is the tool for ANY bulk data work.
-- analyze_data: Send large files to Sonnet for processing. Use for deduplication, \
+- analyze_data: Send large files to Gemini 3.5 Flash for processing. Use for deduplication, \
 ranking, extraction, classification of data files. Supports chunking for files \
 over 200K chars. Use output_file to write results directly to disk.
 - delegate: Now supports input_file parameter to pass file contents as context. \
@@ -3555,10 +3558,10 @@ Use for file-based text processing, extraction, reformatting. For very large fil
 prefer analyze_data which supports chunking.
 - use_skill: Invoke with mode='read' to load a skill's full instructions into \
 your context (you then execute the steps yourself with your tools). Use \
-mode='delegate' to run a text-processing skill as an isolated Sonnet sub-task. \
+mode='delegate' to run a text-processing skill as an isolated Gemini 3.5 Flash sub-task. \
 Skills marked as inline in the system prompt are already active — follow their \
 instructions directly without invoking use_skill.
-- batch_process: THE tool for massive parallel workloads. Fans out to Sonnet in \
+- batch_process: THE tool for massive parallel workloads. Fans out to Gemini 3.5 Flash in \
 parallel with up to 50 concurrent workers. For very large datasets (500+), split \
 into chunks and call batch_process repeatedly — this IS the correct pattern, not \
 a workaround. Use enrich_with_search=true with search_query_template for rich \
@@ -4791,7 +4794,7 @@ class Agent:
                 OPENROUTER_URL,
                 headers=self.headers,
                 json={
-                    "model": SONNET,
+                    "model": WORKER,
                     "messages": [{
                         "role": "user",
                         "content": [image_part, {"type": "text", "text": question}],
@@ -4804,7 +4807,7 @@ class Agent:
             result = resp.json()
             rid = result.get("id")
             if rid:
-                await self.cost_tracker.track(rid, "sonnet")
+                await self.cost_tracker.track(rid, "worker")
             if "error" in result:
                 err = result["error"]
                 return f"Vision error: {err.get('message', err) if isinstance(err, dict) else err}"
@@ -4891,7 +4894,7 @@ class Agent:
                 OPENROUTER_URL,
                 headers=self.headers,
                 json={
-                    "model": SONNET,
+                    "model": WORKER,
                     "messages": [
                         {
                             "role": "system",
@@ -4908,7 +4911,7 @@ class Agent:
                     ],
                     "temperature": 0.0,
                     "max_tokens": 16384,
-                    "session_id": getattr(self, "_thread_id", "") + ":sonnet",
+                    "session_id": getattr(self, "_thread_id", "") + ":worker",
                 },
                 timeout=180,
             )
@@ -5094,7 +5097,7 @@ class Agent:
                     OPENROUTER_URL,
                     headers=self.headers,
                     json={
-                        "model": SONNET,
+                        "model": WORKER,
                         "messages": [
                             {
                                 "role": "system",
@@ -5116,14 +5119,14 @@ class Agent:
                         ],
                         "temperature": 0.0,
                         "max_tokens": 16384,
-                        "session_id": getattr(self, "_thread_id", "") + ":sonnet",
+                        "session_id": getattr(self, "_thread_id", "") + ":worker",
                     },
                     timeout=180,
                 )
                 result = resp.json()
                 rid = result.get("id")
                 if rid:
-                    await self.cost_tracker.track(rid, "sonnet")
+                    await self.cost_tracker.track(rid, "worker")
                 if "error" in result:
                     err = result["error"]
                     all_results.append(
@@ -5192,9 +5195,9 @@ class Agent:
                 f"[System] Follow the above skill instructions step-by-step using your available tools."
             )
 
-        # mode == "delegate": Sonnet shell-out
+        # mode == "delegate": Gemini 3.5 Flash shell-out
         skill_content = skill["content"]
-        skill_model = fm.get("model", SONNET)
+        skill_model = fm.get("model", WORKER)
 
         try:
             resp = await self.http.post(
@@ -5214,14 +5217,14 @@ class Agent:
                     ],
                     "temperature": 0.1,
                     "max_tokens": 16384,
-                    "session_id": getattr(self, "_thread_id", "") + ":sonnet",
+                    "session_id": getattr(self, "_thread_id", "") + ":worker",
                 },
                 timeout=180,
             )
             result = resp.json()
             rid = result.get("id")
             if rid:
-                await self.cost_tracker.track(rid, "sonnet")
+                await self.cost_tracker.track(rid, "worker")
             if "error" in result:
                 err = result["error"]
                 return f"Skill error: {err.get('message', err) if isinstance(err, dict) else err}"
@@ -5360,7 +5363,7 @@ class Agent:
                 elif search_context:
                     prompt += f"\n\nSearch results for context:\n{search_context}"
 
-                sonnet_system_prompt_text = (
+                worker_system_prompt_text = (
                     "Process this item precisely. If search results / evidence documents are provided, "
                     "use them as your primary source. Prefer explicit facts from the evidence over inference. "
                     "If a requested field is not found in the evidence, return null or 'unknown' — do not "
@@ -5374,13 +5377,13 @@ class Agent:
                             OPENROUTER_URL,
                             headers=self.headers,
                             json={
-                                "model": SONNET,
+                                "model": WORKER,
                                 "messages": [
                                     {
                                         "role": "system",
                                         "content": [{
                                             "type": "text",
-                                            "text": sonnet_system_prompt_text,
+                                            "text": worker_system_prompt_text,
                                             "cache_control": {"type": "ephemeral"},
                                         }],
                                     },
@@ -5388,14 +5391,14 @@ class Agent:
                                 ],
                                 "temperature": 0.0,
                                 "max_tokens": 8192 if enrich_with_search else 4096,
-                                "session_id": getattr(self, "_thread_id", "") + ":sonnet",
+                                "session_id": getattr(self, "_thread_id", "") + ":worker",
                             },
                             timeout=60,
                         )
                         r = resp.json()
                         rid = r.get("id")
                         if rid:
-                            await self.cost_tracker.track(rid, "sonnet")
+                            await self.cost_tracker.track(rid, "worker")
                         if "error" in r:
                             if attempt < 2:
                                 await asyncio.sleep(2 * (attempt + 1))
@@ -6318,7 +6321,7 @@ class Agent:
                 OPENROUTER_URL,
                 headers=self.headers,
                 json={
-                    "model": SONNET,
+                    "model": WORKER,
                     "messages": [
                         {
                             "role": "system",
@@ -6722,7 +6725,7 @@ class Agent:
                                     "[System] WARNING: You appear to be manually grinding through "
                                     "items one-by-one using repeated search_web/fetch_page/http_request "
                                     "calls. This is inefficient. Switch to a batch approach:\n"
-                                    "- Use batch_process to fan out work to Sonnet in parallel\n"
+                                    "- Use batch_process to fan out work to Gemini 3.5 Flash in parallel\n"
                                     "- Use run_code to write a parallel processing script\n"
                                     "- Use analyze_data to process large result files\n"
                                     "Note: Many sequential batch_process calls with different items "
@@ -6845,7 +6848,7 @@ class Agent:
             section += "\n<available_skills>\nCallable skills (invoke via use_skill tool):\n"
             for name, desc in callable_skills:
                 section += f"  - {name}: {desc}\n"
-            section += "Use mode='delegate' for isolated sub-task execution via Sonnet, or mode='read' to load the full instructions into your own context.\n"
+            section += "Use mode='delegate' for isolated sub-task execution via Gemini 3.5 Flash, or mode='read' to load the full instructions into your own context.\n"
             section += "</available_skills>\n"
         return section
 
