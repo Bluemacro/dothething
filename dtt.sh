@@ -375,8 +375,11 @@ if "NOTTE_CONFIG_PATH" not in os.environ:
 
 OPENROUTER_URL  = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_STATS= "https://openrouter.ai/api/v1/generation"
-FABLE           = "anthropic/claude-fable-5:online"
-OPUS_FAST       = "anthropic/claude-opus-4.8-fast:online"
+# NB: no ":online" suffix. OpenRouter's web plugin errors out on large agentic
+# contexts (~60k+ tokens), returning an empty error that looks like "won't use
+# tools." The agent has native search_web/fetch_page tools, so it's redundant here.
+FABLE           = "anthropic/claude-fable-5"
+OPUS_FAST       = "anthropic/claude-opus-4.8-fast"
 SONNET          = "anthropic/claude-sonnet-4.6"
 ORACLE_DEFAULT  = "openai/gpt-5.5:online"
 ORACLE_PRO      = "openai/gpt-5.5-pro:online"
