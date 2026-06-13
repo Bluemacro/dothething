@@ -3561,6 +3561,18 @@ based on actual content, never assumptions. Prefer search_replace mode — \
 it is the most reliable. Use line_range when you have line numbers from \
 read_file. After editing, re-read the changed region to verify.
 
+## Coding & Heavy Computation
+Default to Python for scripts — it is the most compatible, and run_code runs it \
+directly with a rich preinstalled library set. But when a task is compute-bound \
+and speed is the bottleneck — puzzle/CTF solving, brute-force or large \
+search-space problems, tight numeric loops, cryptography, simulations — write \
+Rust instead, compile an optimized build (`rustc -O solve.rs` or `cargo build \
+--release`) via run_command, and run the binary. Rust is often orders of \
+magnitude faster and can turn an intractable brute force into a few seconds. \
+run_code only runs python/bash/typescript, so Rust always goes through \
+run_command; if the toolchain is missing, install it (rustup) when the speedup \
+justifies it, otherwise fall back to Python.
+
 ## Direct Output Tasks
 When the user asks a question, requests a summary, or wants a short result, \
 return it directly in the finalize report. Do not create a file for a 10-line \
@@ -3614,7 +3626,12 @@ context lines are error-prone. Prefer search_replace or line_range.
 - search_file: content_query uses ripgrep — fast, regex-capable, \
 .gitignore-aware.
 - run_command: result_mode="did tests pass, which failed and why" not "raw" \
-for long outputs. Write scripts for complex logic rather than long one-liners.
+for long outputs. Write scripts for complex logic rather than long one-liners. \
+When a command or pipeline produces output you need to inspect or post-process, \
+redirect the FULL output to a file on the FIRST run (`cmd > out.txt 2>&1`), then \
+read/grep/process that file. Don't rely on inline stdout that can be truncated, \
+lost to a broken pipe, or mangled by a delimiter or quoting issue — that forces \
+a wasteful second run. Capture once, then analyze from the file.
 - search_web: craft queries like a human would. 3-6 keywords. Add year for \
 recency. Use categories='images' for image search, categories='news' for news. \
 Use engines='google,bing' to target specific providers, engines='google scholar' \
