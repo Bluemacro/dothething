@@ -2874,7 +2874,7 @@ TOOLS = [
         "function": {
             "name": "run_code",
             "description": (
-                "Write and execute a Python, Bash, or TypeScript script. The code is saved "
+                "Write and execute a Python, Bash, TypeScript, or Rust script. The code is saved "
                 "to a temporary file and executed. Use for: batch parallel operations (e.g. "
                 "hitting SearXNG 500 times concurrently), data processing, statistical "
                 "analysis, web scraping pipelines, or any task where writing a script is more "
@@ -2886,6 +2886,9 @@ TOOLS = [
                 "  SEARXNG_URL — the local SearXNG base URL for direct API access\n"
                 "  DTT_CWD — the current working directory\n"
                 "  DTT_BASE — /tmp/dothething base directory\n\n"
+                "language='rust' compiles an optimized binary (rustc -O) and runs it — use it "
+                "for compute-bound work (puzzle/CTF solving, brute force, tight numeric loops, "
+                "crypto) where Python is too slow.\n\n"
                 "IMPORTANT: For bulk research (50+ items), ALWAYS prefer this over repeated "
                 "sequential search_web/fetch_page calls. Write an async script that processes "
                 "all items concurrently, saves results to a file, then process that file."
@@ -2895,8 +2898,8 @@ TOOLS = [
                 "properties": {
                     "language": {
                         "type": "string",
-                        "enum": ["python", "bash", "typescript"],
-                        "description": "Script language (default: python)",
+                        "enum": ["python", "bash", "typescript", "rust"],
+                        "description": "Script language (default: python). Use 'rust' for speed-critical/compute-bound work — it compiles an optimized binary and runs it.",
                     },
                     "code": {
                         "type": "string",
@@ -3565,13 +3568,12 @@ read_file. After editing, re-read the changed region to verify.
 Default to Python for scripts — it is the most compatible, and run_code runs it \
 directly with a rich preinstalled library set. But when a task is compute-bound \
 and speed is the bottleneck — puzzle/CTF solving, brute-force or large \
-search-space problems, tight numeric loops, cryptography, simulations — write \
-Rust instead, compile an optimized build (`rustc -O solve.rs` or `cargo build \
---release`) via run_command, and run the binary. Rust is often orders of \
-magnitude faster and can turn an intractable brute force into a few seconds. \
-run_code only runs python/bash/typescript, so Rust always goes through \
-run_command; if the toolchain is missing, install it (rustup) when the speedup \
-justifies it, otherwise fall back to Python.
+search-space problems, tight numeric loops, cryptography, simulations — use \
+run_code with language='rust'. It compiles an optimized binary (rustc -O) and \
+runs it, often orders of magnitude faster than Python — enough to turn an \
+intractable brute force into a few seconds. If rustc isn't installed, run_code \
+will tell you; install it (rustup) when the speedup justifies it, otherwise \
+fall back to Python.
 
 ## Direct Output Tasks
 When the user asks a question, requests a summary, or wants a short result, \
@@ -5100,8 +5102,9 @@ class Agent:
 
     async def _tool_run_code(self, code, language="python", timeout=600, **kw):
         timeout = max(10, min(int(timeout or 600), 3600))
-        ext_map = {"python": ".py", "bash": ".sh", "typescript": ".ts"}
+        ext_map = {"python": ".py", "bash": ".sh", "typescript": ".ts", "rust": ".rs"}
         ext = ext_map.get(language, ".py")
+        binary_path = None
 
         fd, script_path_str = tempfile.mkstemp(
             suffix=ext, dir=str(self.cwd), prefix="_dtt_script_"
@@ -5119,6 +5122,14 @@ class Agent:
                 script_path.unlink(missing_ok=True)
                 return "Error: TypeScript requires Node.js/npx which is not installed on this system. Use python or bash instead."
             cmd = f"npx --yes tsx {shlex.quote(str(script_path))}"
+        elif language == "rust":
+            if not shutil.which("rustc"):
+                script_path.unlink(missing_ok=True)
+                return "Error: Rust requires rustc, which is not installed. Install it (https://rustup.rs) or use python/bash instead."
+            binary_path = Path(str(script_path) + ".bin")
+            # Optimized build (-O), then run the binary. rustc compile errors surface on stderr.
+            cmd = (f"rustc -O {shlex.quote(str(script_path))} -o {shlex.quote(str(binary_path))} "
+                   f"&& {shlex.quote(str(binary_path))}")
         else:
             script_path.unlink(missing_ok=True)
             return f"Error: Unsupported language '{language}'"
@@ -5173,10 +5184,12 @@ class Agent:
         except Exception as e:
             return f"Code execution error: {e}"
         finally:
-            try:
-                script_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            for _p in (script_path, binary_path):
+                if _p:
+                    try:
+                        _p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     async def _tool_analyze_data(self, file_path, instructions, output_format="plain",
                                   output_file=None, **kw):
@@ -7318,12 +7331,15 @@ class Agent:
                 result_len=tok,
                 duration_sec=round(duration_sec, 3),
             )
-            ctx_pct = ""
             if self._ctx_tokens:
                 pct = self._ctx_tokens / CONTEXT_USABLE_TOKENS * 100
-                ctx_pct = f"  [{'🟡 ' if pct >= 90 else ''}ctx {pct:.0f}%]"
+                marker = "🔴 " if pct >= 100 else ("🟡 " if pct >= 90 else "")
+                ctx_seg = f"{marker}{pct:.0f}% ctx"
+            else:
+                ctx_seg = "—% ctx"
             print(
-                f"  ⚡ {name}" + (f" → {brief}" if brief else "") + f"  [{tok:,} tok {tag}]" + ctx_pct,
+                f"  ⚡ {name}" + (f" → {brief}" if brief else "")
+                + f"  [{tok:,} tok {tag} | {duration_sec:.1f}s | {ctx_seg}]",
                 file=sys.stderr,
             )
             if name in ("plan_create", "plan_completed", "plan_update", "plan_remaining"):
