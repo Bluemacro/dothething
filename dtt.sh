@@ -1870,6 +1870,113 @@ def parse_fallback_tool_calls(text):
     return None
 
 # ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# Streaming completion helper — SSE so long generations (e.g. the pro oracle's
+# multi-minute reasoning, or large file writes) don't block on a non-streaming
+# socket and get dropped by an idle/read timeout. Accumulates the SSE stream into
+# the SAME dict shape a non-streaming response returns, so callers are unchanged:
+#   {"id", "choices":[{"message":{...}, "finish_reason"}], "usage":{...}}
+# On HTTP error: {"_status", "_retry_after", "error":{...}}. On stream/timeout
+# error: {"error":{"message":...}}.
+# ═══════════════════════════════════════════════════════════════════
+async def post_completion(http, headers, payload, total_timeout, on_progress=None):
+    body = dict(payload)
+    body["stream"] = True
+    body["stream_options"] = {"include_usage": True}
+    msg = {"role": "assistant", "content": None}
+    tool_calls, rd_by_index, reasoning_parts = {}, {}, []
+    state = {"finish": None, "usage": {}, "id": None, "nc": 0, "cn": 0}
+
+    async def _run():
+        async with http.stream("POST", OPENROUTER_URL, headers=headers, json=body,
+                               timeout=httpx.Timeout(total_timeout, connect=30.0)) as resp:
+            if resp.status_code != 200:
+                raw = (await resp.aread()).decode("utf-8", "replace")
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    parsed = {}
+                parsed.setdefault("error", {"message": raw[:500] or f"HTTP {resp.status_code}"})
+                parsed["_status"] = resp.status_code
+                parsed["_retry_after"] = resp.headers.get("retry-after")
+                return parsed
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                state["cn"] += 1
+                if chunk.get("id"):
+                    state["id"] = chunk["id"]
+                if chunk.get("usage"):
+                    state["usage"] = chunk["usage"]
+                if chunk.get("error"):
+                    return {"error": chunk["error"], "id": state["id"]}
+                for ch in chunk.get("choices") or []:
+                    delta = ch.get("delta") or {}
+                    c = delta.get("content")
+                    if c:
+                        msg["content"] = (msg["content"] or "") + c
+                        state["nc"] += len(c)
+                    r = delta.get("reasoning")
+                    if isinstance(r, str) and r:
+                        reasoning_parts.append(r)
+                    for item in delta.get("reasoning_details") or []:
+                        idx = item.get("index", 0)
+                        slot = rd_by_index.setdefault(idx, {})
+                        for k, v in item.items():
+                            if k in ("text", "summary") and isinstance(v, str):
+                                slot[k] = slot.get(k, "") + v
+                            else:
+                                slot[k] = v
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        slot = tool_calls.setdefault(idx, {"id": None, "type": "function",
+                                                           "function": {"name": "", "arguments": ""}})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        if tc.get("type"):
+                            slot["type"] = tc["type"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            slot["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            slot["function"]["arguments"] += fn["arguments"]
+                    if ch.get("finish_reason"):
+                        state["finish"] = ch["finish_reason"]
+                if on_progress and state["cn"] % 32 == 0:
+                    try:
+                        on_progress(state["nc"])
+                    except Exception:
+                        pass
+        return None
+
+    try:
+        early = await asyncio.wait_for(_run(), timeout=total_timeout + 60)
+    except asyncio.TimeoutError:
+        return {"error": {"message": f"request exceeded {total_timeout}s"}}
+    except (httpx.TimeoutException, httpx.HTTPError) as e:
+        return {"error": {"message": f"stream connection error: {e}"}}
+    except Exception as e:
+        return {"error": {"message": f"stream error: {e}"}}
+    if early is not None:
+        return early
+    if tool_calls:
+        msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    if reasoning_parts:
+        msg["reasoning"] = "".join(reasoning_parts)
+    if rd_by_index:
+        msg["reasoning_details"] = [rd_by_index[i] for i in sorted(rd_by_index)]
+    return {"id": state["id"], "choices": [{"message": msg, "finish_reason": state["finish"]}],
+            "usage": state["usage"]}
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Smart Summarizer — pipes big outputs through Gemini 3.5 Flash
 # ═══════════════════════════════════════════════════════════════════
 async def smart_summarize(raw, goal, headers, cost_tracker, http, tool_name="unknown"):
@@ -1907,7 +2014,7 @@ async def smart_summarize(raw, goal, headers, cost_tracker, http, tool_name="unk
                         {"role": "user", "content": raw},
                     ],
                     "temperature": 0.0,
-                    "max_tokens": 8192,
+                    "max_tokens": 131072,
                     "session_id": "summarizer",
                 },
                 timeout=120,
@@ -4587,10 +4694,12 @@ class Agent:
                     msgs.append(m)
         msgs.append({"role": "user", "content": question})
         try:
-            resp = await self.http.post(
-                OPENROUTER_URL,
-                headers=self.headers,
-                json={
+            # gpt-5.5-pro can reason for ~45 min on hard problems; streaming keeps
+            # the connection alive so it isn't dropped mid-reasoning. 75 min for
+            # pro, 15 min for the standard oracle.
+            oracle_timeout = 4500 if self.oracle_model == ORACLE_PRO else 900
+            result = await post_completion(
+                self.http, self.headers, {
                     "model": self.oracle_model,
                     "messages": [{"role": "system", "content": system}] + msgs,
                     "temperature": 0.2,
@@ -4600,9 +4709,8 @@ class Agent:
                     "reasoning": {"effort": self._oracle_effort},
                     "session_id": getattr(self, "_thread_id", "") + ":oracle",
                 },
-                timeout=300,
+                total_timeout=oracle_timeout,
             )
-            result = resp.json()
             rid = result.get("id")
             if rid:
                 await self.cost_tracker.track(rid, "oracle")
@@ -4803,7 +4911,7 @@ class Agent:
                         "role": "user",
                         "content": [image_part, {"type": "text", "text": question}],
                     }],
-                    "max_tokens": 4096,
+                    "max_tokens": 131072,
                     "temperature": 0.1,
                 },
                 timeout=120,
@@ -4914,7 +5022,7 @@ class Agent:
                         },
                     ],
                     "temperature": 0.0,
-                    "max_tokens": 16384,
+                    "max_tokens": 131072,
                     "session_id": getattr(self, "_thread_id", "") + ":worker",
                 },
                 timeout=180,
@@ -5122,7 +5230,7 @@ class Agent:
                             },
                         ],
                         "temperature": 0.0,
-                        "max_tokens": 16384,
+                        "max_tokens": 131072,
                         "session_id": getattr(self, "_thread_id", "") + ":worker",
                     },
                     timeout=180,
@@ -5220,7 +5328,7 @@ class Agent:
                         {"role": "user", "content": input_data or "Execute this skill."},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 16384,
+                    "max_tokens": 131072,
                     "session_id": getattr(self, "_thread_id", "") + ":worker",
                 },
                 timeout=180,
@@ -5394,7 +5502,7 @@ class Agent:
                                     {"role": "user", "content": prompt},
                                 ],
                                 "temperature": 0.0,
-                                "max_tokens": 8192 if enrich_with_search else 4096,
+                                "max_tokens": 131072,
                                 "session_id": getattr(self, "_thread_id", "") + ":worker",
                             },
                             timeout=60,
@@ -6344,7 +6452,7 @@ class Agent:
                         {"role": "user", "content": summary_text},
                     ],
                     "temperature": 0.0,
-                    "max_tokens": 8192,
+                    "max_tokens": 131072,
                 },
                 timeout=120,
             )
@@ -6990,7 +7098,7 @@ class Agent:
                     "tool_choice": "auto",
                     "parallel_tool_calls": True,
                     "temperature": 0.2,
-                    "max_tokens": 16384,
+                    "max_tokens": 131072,
                     "reasoning": {"effort": self._model_effort},
                     "session_id": getattr(self, "_thread_id", ""),
                     "cache_control": {"type": "ephemeral"},
@@ -7000,22 +7108,19 @@ class Agent:
                     dbg = self._redact_debug_str(dbg)
                     print(f"[debug] Request: {dbg}", file=sys.stderr)
 
-                resp = await self.http.post(
-                    OPENROUTER_URL,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=600,
+                result = await post_completion(
+                    self.http, self.headers, payload, total_timeout=1800,
+                    on_progress=lambda nc: self.spinner.update(f"Thinking… {nc:,} chars streamed"),
                 )
-                if resp.status_code == 429:
-                    wait = int(resp.headers.get("retry-after", 5))
+                status = result.get("_status")
+                if status == 429:
+                    wait = int(result.get("_retry_after") or 5)
                     self.spinner.update(f"Rate limited — waiting {wait}s…")
                     await asyncio.sleep(wait)
                     continue
-                if resp.status_code >= 500 and attempt < retries - 1:
+                if status and status >= 500 and attempt < retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
-
-                result = resp.json()
 
                 if self.debug:
                     dbg_r = json.dumps(result, ensure_ascii=False)[:4000]
@@ -7061,10 +7166,9 @@ class Agent:
                         payload.pop("tools", None)
                         payload.pop("tool_choice", None)
                         payload.pop("parallel_tool_calls", None)
-                        resp2 = await self.http.post(
-                            OPENROUTER_URL, headers=self.headers, json=payload, timeout=600
+                        result = await post_completion(
+                            self.http, self.headers, payload, total_timeout=1800
                         )
-                        result = resp2.json()
                         rid2 = result.get("id")
                         if rid2:
                             await self.cost_tracker.track(rid2, "opus")
@@ -8341,19 +8445,17 @@ class OrchestratorApp:
                                 f"Turn {turn + 1}: querying orchestrator model..."
                             )
 
-                            resp = await client.post(
-                                OPENROUTER_URL,
-                                headers=_make_headers(orchestrator.api_key),
-                                json={
+                            data = await post_completion(
+                                client, _make_headers(orchestrator.api_key), {
                                     "model": OPUS,
                                     "messages": messages,
                                     "tools": ORCHESTRATOR_TOOLS,
                                     "tool_choice": "auto",
                                     "temperature": 0.2,
-                                    "max_tokens": 16384,
+                                    "max_tokens": 131072,
                                 },
+                                total_timeout=1800,
                             )
-                            data = resp.json()
 
                             if "error" in data:
                                 err = data["error"]
