@@ -1884,7 +1884,7 @@ async def post_completion(http, headers, payload, total_timeout, on_progress=Non
     body["stream"] = True
     body["stream_options"] = {"include_usage": True}
     msg = {"role": "assistant", "content": None}
-    tool_calls, rd_by_index, reasoning_parts = {}, {}, []
+    tool_calls = {}
     state = {"finish": None, "usage": {}, "id": None, "nc": 0, "cn": 0}
 
     async def _run():
@@ -1923,17 +1923,8 @@ async def post_completion(http, headers, payload, total_timeout, on_progress=Non
                     if c:
                         msg["content"] = (msg["content"] or "") + c
                         state["nc"] += len(c)
-                    r = delta.get("reasoning")
-                    if isinstance(r, str) and r:
-                        reasoning_parts.append(r)
-                    for item in delta.get("reasoning_details") or []:
-                        idx = item.get("index", 0)
-                        slot = rd_by_index.setdefault(idx, {})
-                        for k, v in item.items():
-                            if k in ("text", "summary") and isinstance(v, str):
-                                slot[k] = slot.get(k, "") + v
-                            else:
-                                slot[k] = v
+                    # Reasoning/thinking deltas are intentionally ignored — we never
+                    # retain them, so they don't accumulate in the context window.
                     for tc in delta.get("tool_calls") or []:
                         idx = tc.get("index", 0)
                         slot = tool_calls.setdefault(idx, {"id": None, "type": "function",
@@ -1968,10 +1959,6 @@ async def post_completion(http, headers, payload, total_timeout, on_progress=Non
         return early
     if tool_calls:
         msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    if reasoning_parts:
-        msg["reasoning"] = "".join(reasoning_parts)
-    if rd_by_index:
-        msg["reasoning_details"] = [rd_by_index[i] for i in sorted(rd_by_index)]
     return {"id": state["id"], "choices": [{"message": msg, "finish_reason": state["finish"]}],
             "usage": state["usage"]}
 
@@ -6684,12 +6671,6 @@ class Agent:
                     for p in text
                 ).strip()
 
-            # Extract reasoning blocks for continuity across turns
-            _reasoning = {}
-            for _rkey in ("reasoning", "reasoning_content", "reasoning_details"):
-                if msg.get(_rkey):
-                    _reasoning[_rkey] = msg[_rkey]
-
             if text and text.strip():
                 self.events.emit("assistant_text", text=text)
                 self._print_console_block("Agent", text)
@@ -6706,7 +6687,6 @@ class Agent:
             if not tool_calls:
                 nudge_count += 1
                 _nudge_msg = {"role": "assistant", "content": text or ""}
-                _nudge_msg.update(_reasoning)
                 self.messages.append(_nudge_msg)
                 if nudge_count >= 3:
                     print("  ⚠ Model won't use tools — forcing stop.", file=sys.stderr)
@@ -6731,7 +6711,6 @@ class Agent:
                 if text:
                     assistant_msg["content"] = text
                 assistant_msg["tool_calls"] = non_fin
-                assistant_msg.update(_reasoning)
                 self.messages.append(assistant_msg)
 
                 # Execute the non-finalize tools normally (don't waste them)
@@ -6755,7 +6734,6 @@ class Agent:
             if text is not None:
                 assistant_msg["content"] = text
             assistant_msg["tool_calls"] = tool_calls
-            assistant_msg.update(_reasoning)
             self.messages.append(assistant_msg)
 
             self.spinner.start("Executing tools…")
