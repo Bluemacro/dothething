@@ -7304,7 +7304,7 @@ class Agent:
             ctx_pct = ""
             if self._ctx_tokens:
                 pct = self._ctx_tokens / CONTEXT_USABLE_TOKENS * 100
-                ctx_pct = f"  [{'⚠ ' if pct >= 90 else ''}ctx {pct:.0f}%]"
+                ctx_pct = f"  [{'🟡 ' if pct >= 90 else ''}ctx {pct:.0f}%]"
             print(
                 f"  ⚡ {name}" + (f" → {brief}" if brief else "") + f"  [{tok:,} tok {tag}]" + ctx_pct,
                 file=sys.stderr,
