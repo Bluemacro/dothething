@@ -333,7 +333,7 @@ cat > "$BASE/agent.py" << 'PYTHON_AGENT'
 #!/usr/bin/env python3
 """dothething — autonomous AI agent | https://dotheth.ing"""
 
-import os, sys, json, time, asyncio, subprocess, socket, re, atexit
+import os, sys, json, time, asyncio, subprocess, socket, re, atexit, signal
 import threading, argparse, shlex, shutil, traceback, copy
 import fnmatch, difflib, hashlib, base64, mimetypes, uuid
 import tempfile, contextlib
@@ -393,6 +393,23 @@ MAX_LOOPS       = 200
 # the 1M window minus ~128k reserved for the response. Shown as "ctx %" per turn.
 CONTEXT_USABLE_TOKENS = 1_000_000 - 128_000
 DEFAULT_CMD_TIMEOUT = 300
+
+
+def _kill_process_group(proc):
+    """SIGKILL a subprocess and ALL its descendants. The process must have been
+    launched with start_new_session=True so it leads its own process group;
+    proc.kill() alone only kills the wrapper shell, leaving children running as
+    orphans that keep burning CPU and hold the output pipe open (making a timed-out
+    command block far past its timeout). Falls back to killing just the process."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_INLINE_BYTES = 5 * 1024 * 1024
 DEFAULT_HEADLESS_VIEWPORT_WIDTH = 1280
@@ -4479,6 +4496,7 @@ class Agent:
                 cwd=str(run_cwd),
                 env=process_env,
                 executable="/bin/bash",
+                start_new_session=True,
             )
             timed_out = False
             try:
@@ -4487,7 +4505,7 @@ class Agent:
                 )
             except asyncio.TimeoutError:
                 timed_out = True
-                proc.kill()
+                _kill_process_group(proc)
                 stdout, stderr = await proc.communicate()
             duration = time.time() - start
             return json.dumps({
@@ -5163,6 +5181,7 @@ class Agent:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.cwd),
                 env=env,
+                start_new_session=True,
             )
             timed_out = False
             try:
@@ -5171,7 +5190,7 @@ class Agent:
                 )
             except asyncio.TimeoutError:
                 timed_out = True
-                proc.kill()
+                _kill_process_group(proc)
                 stdout, stderr = await proc.communicate()
 
             duration = round(time.time() - start_time, 3)
